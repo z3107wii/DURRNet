@@ -1,8 +1,6 @@
 import os
 from os.path import join
-
 import torch.backends.cudnn as cudnn
-
 import data.sirs_dataset as datasets
 import util.util as util
 from data.image_folder import read_fns
@@ -13,118 +11,141 @@ import random
 import torch
 import numpy as np
 
-
+# 1. 解析參數
 opt = TrainOptions().parse()
-print(opt)
 cudnn.benchmark = True
 
-opt.display_freq = 10
+# 2. 資料路徑設定
+base_path = "/content/drive/MyDrive/Colab Notebooks/Term_Project/training set"
 
-if opt.debug:
-    opt.display_id = 1
-    opt.display_freq = 1
-    opt.print_freq = 20
-    opt.nEpochs = 40
-    opt.max_dataset_size = 9999
-    opt.no_log = False
-    opt.nThreads = 0
-    opt.decay_iter = 0
-    opt.serial_batches = True
-    opt.no_flip = True
+# 建立訓練資料集 (4組)
+train_ds1 = datasets.CEILTrainDataset(
+    join(base_path, "training set 1_13700"),
+    m_dir="syn",
+    t_dir="t",
+    enable_transforms=True,
+    if_align=opt.if_align,
+)
+train_ds2 = datasets.CEILTrainDataset(
+    join(base_path, "training set 2_Berkeley_Real"),
+    m_dir="blended",
+    t_dir="transmission_layer",
+    enable_transforms=True,
+    if_align=opt.if_align,
+)
+train_ds3 = datasets.CEILTrainDataset(
+    join(base_path, "training set 3_Nature"),
+    m_dir="blended",
+    t_dir="transmission_layer",
+    enable_transforms=True,
+    if_align=opt.if_align,
+)
+train_ds4 = datasets.CEILTrainDataset(
+    join(base_path, "training set 4_unaligned_train250"),
+    m_dir="blended",
+    t_dir="transmission_layer",
+    enable_transforms=True,
+    if_align=opt.if_align,
+)
 
-# modify the following code to
-datadir = os.path.join(os.path.expanduser('~'), 'input the directory of the training dataset')
-
-datadir_syn = join(datadir, 'train/VOCdevkit/VOC2012/JPEGImages')
-datadir_real = join(datadir, 'train/real')
-
-train_dataset = datasets.CEILDataset(
-    datadir_syn, read_fns('data/VOC2012_224_train_jpg.txt'), size=opt.max_dataset_size, enable_transforms=True,
-    low_sigma=opt.low_sigma, high_sigma=opt.high_sigma,
-    low_gamma=opt.low_gamma, high_gamma=opt.high_gamma)
-
-train_dataset_real = datasets.CEILTrainDataset(datadir_real, read_fns('data/real_train.txt'),
-                                              enable_transforms=True, if_align=opt.if_align)
-
-train_dataset_fusion = datasets.FusionDataset([train_dataset, train_dataset_real], [0.7, 0.3])
-
-
+train_dataset_fusion = datasets.FusionDataset(
+    [train_ds1, train_ds2, train_ds3, train_ds4], [0.4, 0.2, 0.2, 0.2]
+)
 train_dataloader_fusion = datasets.DataLoader(
-    train_dataset_fusion, batch_size=opt.batchSize, shuffle=not opt.serial_batches,
-    num_workers=opt.nThreads, pin_memory=True)
+    train_dataset_fusion,
+    batch_size=opt.batchSize,
+    shuffle=not opt.serial_batches,
+    num_workers=opt.nThreads,
+    pin_memory=True,
+)
 
-eval_dataset_real = datasets.CEILTestDataset(join(datadir, f'test420/real20_{opt.real20_size}'),
-                                             fns=read_fns('data/real_test.txt'),
-                                             enable_transforms=False,
-                                             if_align=opt.if_align)
-eval_dataset_solidobject = datasets.CEILTestDataset(join(datadir, 'test/SIR2/SolidObjectDataset'),
-                                                    if_align=opt.if_align)
-eval_dataset_postcard = datasets.CEILTestDataset(join(datadir, 'test/SIR2/PostcardDataset'), if_align=opt.if_align)
-eval_dataset_wild = datasets.CEILTestDataset(join(datadir, 'test/SIR2/WildSceneDataset'), if_align=opt.if_align)
+# 驗證集
+val_ds = datasets.CEILTestDataset(
+    join(base_path, "training set 4_unaligned_train250"),
+    m_dir="blended",
+    t_dir="transmission_layer",
+    enable_transforms=False,
+    if_align=opt.if_align,
+)
+val_dataloader = datasets.DataLoader(
+    val_ds, batch_size=1, shuffle=False, num_workers=opt.nThreads, pin_memory=True
+)
 
-eval_dataloader_real = datasets.DataLoader(
-    eval_dataset_real, batch_size=1, shuffle=False,
-    num_workers=opt.nThreads, pin_memory=True)
-
-eval_dataloader_solidobject = datasets.DataLoader(
-    eval_dataset_solidobject, batch_size=1, shuffle=False,
-    num_workers=opt.nThreads, pin_memory=True)
-eval_dataloader_postcard = datasets.DataLoader(
-    eval_dataset_postcard, batch_size=1, shuffle=False,
-    num_workers=opt.nThreads, pin_memory=True)
-
-eval_dataloader_wild = datasets.DataLoader(
-    eval_dataset_wild, batch_size=1, shuffle=False,
-    num_workers=opt.nThreads, pin_memory=True)
-
-"""Main Loop"""
+# 3. 初始化 Engine
 engine = Engine(opt)
-result_dir = os.path.join(f'./checkpoints/{opt.name}/results',
-                          mutils.get_formatted_time())
+result_dir = os.path.join(
+    f"/content/drive/MyDrive/Colab Notebooks/Term_Project/DURRNet/results",
+    mutils.get_formatted_time(),
+)
 
 
 def set_learning_rate(lr):
     for optimizer in engine.model.optimizers:
-        print('[i] set learning rate to {}'.format(lr))
-        util.set_opt_param(optimizer, 'lr', lr)
+        util.set_opt_param(optimizer, "lr", lr)
 
 
-if opt.resume or opt.debug_eval:
-    save_dir = os.path.join(result_dir, '%03d' % engine.epoch)
-    os.makedirs(save_dir, exist_ok=True)
-    engine.eval(eval_dataloader_real, dataset_name='testdata_real20', savedir=save_dir, suffix='real20')
-    engine.eval(eval_dataloader_solidobject, dataset_name='testdata_solidobject', savedir=save_dir,
-                suffix='solidobject')
-    engine.eval(eval_dataloader_postcard, dataset_name='testdata_postcard', savedir=save_dir, suffix='postcard')
-    engine.eval(eval_dataloader_wild, dataset_name='testdata_wild', savedir=save_dir, suffix='wild')
+# --- 訓練計數器與參數 ---
+save_interval = 1500  # 每 1500 張圖片儲存一次
+# 如果是接續訓練，嘗試從已訓練的 iterations 換算圖片數
+accumulated_imgs = engine.iterations * opt.batchSize
+current_step_counter = 0  # 用於觸發每 1500 張儲存的計數器
 
-# define training strategy
+decay_rate = 0.5
 engine.model.opt.lambda_gan = 0
 set_learning_rate(opt.lr)
 
-decay_rate = 0.5
+print(f"[i] 初始狀態：已處理圖片 {accumulated_imgs} 張")
+
+# --- 訓練主迴圈 ---
 while engine.epoch < opt.nEpochs:
+    # 學習率調整策略
     if opt.fixed_lr == 0:
         if engine.epoch >= opt.nEpochs * 0.2:
-            engine.model.opt.lambda_gan = 0.0001  # gan loss is added
+            engine.model.opt.lambda_gan = 0.0001
         if engine.epoch >= opt.nEpochs * 0.4:
-            set_learning_rate(opt.lr * decay_rate**1)#0.5
+            set_learning_rate(opt.lr * decay_rate**1)
         if engine.epoch >= opt.nEpochs * 0.6:
-            set_learning_rate(opt.lr * decay_rate**2)#0.2
+            set_learning_rate(opt.lr * decay_rate**2)
         if engine.epoch >= opt.nEpochs * 0.8:
-            set_learning_rate(opt.lr * decay_rate**3)#0.1
-        if engine.epoch >= opt.nEpochs:
-            set_learning_rate(opt.lr * decay_rate**4)#0.05
+            set_learning_rate(opt.lr * decay_rate**3)
     else:
         set_learning_rate(opt.fixed_lr)
 
-    engine.train(train_dataloader_fusion)
+    print("\nEpoch: %d" % engine.epoch)
+    engine.model.train()
 
-    if engine.epoch % 1 == 0:
-        save_dir = os.path.join(result_dir, '%03d' % engine.epoch)
-        os.makedirs(save_dir, exist_ok=True)
-        engine.eval(eval_dataloader_real, dataset_name='testdata_real20', savedir=save_dir, suffix='real20')
-        engine.eval(eval_dataloader_solidobject, dataset_name='testdata_solidobject', savedir=save_dir,
-                    suffix='solidobject')
-        engine.eval(eval_dataloader_postcard, dataset_name='testdata_postcard', savedir=save_dir, suffix='postcard')
-        engine.eval(eval_dataloader_wild, dataset_name='testdata_wild', savedir=save_dir, suffix='wild')
+    for i, data in enumerate(train_dataloader_fusion):
+        engine.model.set_input(data, mode="train")
+        engine.model.optimize_parameters()
+
+        # 累計圖片張數
+        accumulated_imgs += opt.batchSize
+        current_step_counter += opt.batchSize
+
+        # 顯示進度
+        errors = engine.model.get_current_errors()
+        util.progress_bar(
+            i,
+            len(train_dataloader_fusion),
+            f"Total Imgs: {accumulated_imgs} | Loss: {errors}",
+        )
+
+        # 觸發定期儲存
+        if current_step_counter >= save_interval:
+            # 檔名範例: DURRNet_Project_iter_1500.pt
+            label_name = f"iter_{accumulated_imgs}"
+            print(f"\n[Checkpoint] 已達處理間隔，儲存權重: {label_name}")
+
+            engine.model.save(label=label_name)
+            engine.model.save(label="latest")  # 同時更新一個最新的
+
+            current_step_counter = 0  # 重置區段計數器
+
+        engine.iterations += 1
+
+    # Epoch 結束後的驗證與儲存
+    engine.epoch += 1
+    save_dir = os.path.join(result_dir, "%03d" % engine.epoch)
+    os.makedirs(save_dir, exist_ok=True)
+    engine.eval(val_dataloader, dataset_name="val_set", savedir=save_dir, suffix="val")
+    engine.model.save(label="latest")
